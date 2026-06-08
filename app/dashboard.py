@@ -30,7 +30,6 @@ except Exception:
     prepare_dataframe = None
 
 # ---------- SERIAL SETUP ----------
-PORT = "COM3"
 BAUD = 115200
 
 DATA_DIR = "data"
@@ -63,6 +62,8 @@ def load_env_file(file_name=".env"):
 
 
 load_env_file()
+
+PORT = os.getenv("FARMEASE_SERIAL_PORT", "COM3")
 
 
 def env_bool(name, default=False):
@@ -651,7 +652,19 @@ def get_model_status_text():
         gate = report.get("quality_gate", {}).get("relay_light", {})
         gate_status = "pass" if gate.get("passed", False) else "warn"
 
-        return f"Model: light={light_model}, relay={relay_model}, gate={gate_status}"
+        completed_at = report.get("completed_at_utc")
+        if completed_at:
+            trained_at = completed_at
+        elif os.path.exists(TRAINING_REPORT_FILE):
+            trained_at = datetime.fromtimestamp(os.path.getmtime(TRAINING_REPORT_FILE)).strftime("%Y-%m-%d %H:%M")
+        else:
+            trained_at = "unknown"
+
+        relay_note = ""
+        if not gate.get("passed", False) and (relay_model == "not-produced" or relay_model is None):
+            relay_note = " (relay skipped)"
+
+        return f"Model: light={light_model}, relay={relay_model}, gate={gate_status}, trained={trained_at}{relay_note}"
     except Exception:
         return "Model: report unreadable"
 
