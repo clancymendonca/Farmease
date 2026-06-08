@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -33,6 +34,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-regression-mae", type=float, default=1000.0)
     parser.add_argument("--fail-on-health-issue", action="store_true", default=False)
     parser.add_argument("--fail-on-warning", action="store_true", default=False)
+    parser.add_argument("--notify-telegram", action="store_true", default=False)
     return parser.parse_args()
 
 
@@ -68,6 +70,65 @@ def add_check(results: list[CheckResult], name: str, condition: bool, pass_messa
         results.append(CheckResult(name=name, status="pass", message=pass_message, value=value, threshold=threshold))
     else:
         results.append(CheckResult(name=name, status="fail", message=fail_message, value=value, threshold=threshold))
+
+
+def add_warn_check(results: list[CheckResult], name: str, message: str, value: Any = None) -> None:
+    results.append(CheckResult(name=name, status="warn", message=message, value=value))
+
+
+def load_env_file(project_root: Path) -> None:
+    env_path = project_root / ".env"
+    if not env_path.exists():
+        return
+
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        raw = line.strip()
+        if not raw or raw.startswith("#") or "=" not in raw:
+            continue
+        key, value = raw.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+def env_bool(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def maybe_notify_telegram(project_root: Path, payload: dict[str, Any], checks: list[CheckResult]) -> None:
+    failed = [item for item in checks if item.status == "fail"]
+    warned = [item for item in checks if item.status == "warn"]
+    if not failed and not warned:
+        return
+
+    load_env_file(project_root)
+    if not env_bool("TELEGRAM_ALERTS", default=False):
+        return
+
+    try:
+        if str(project_root) not in sys.path:
+            sys.path.insert(0, str(project_root))
+        from integrations.telegram_notifier import TelegramNotifier
+    except ImportError:
+        return
+
+    notifier = TelegramNotifier(
+        bot_token=os.environ.get("TELEGRAM_BOT_TOKEN"),
+        chat_id=os.environ.get("TELEGRAM_CHAT_ID"),
+        enabled=True,
+    )
+    if not notifier.is_configured():
+        return
+
+    status = str(payload.get("overall_status", "unknown")).upper()
+    lines = [f"FarmEase retraining health check: {status}"]
+    for item in failed + warned:
+        lines.append(f"- [{item.status.upper()}] {item.name}: {item.message}")
+    notifier.send_message("\n".join(lines))
 
 
 def evaluate_health(args: argparse.Namespace) -> tuple[dict[str, Any], list[CheckResult]]:
@@ -177,6 +238,29 @@ def evaluate_health(args: argparse.Namespace) -> tuple[dict[str, Any], list[Chec
         threshold=1,
     )
 
+    relay_gate = (report.get("quality_gate") or {}).get("relay_light") or {}
+    relay_gate_passed = bool(relay_gate.get("passed", False))
+    relay_artifact = model_dir / "relay_light_model.joblib"
+    relay_produced = relay_artifact.exists() or bool((report.get("best_models") or {}).get("relay_light"))
+    if relay_gate_passed or relay_produced:
+        add_check(
+            checks,
+            name="relay_classifier_produced",
+            condition=True,
+            pass_message="Relay classifier produced or quality gate passed",
+            fail_message="Relay classifier not produced",
+            value=relay_produced,
+        )
+    else:
+        add_warn_check(
+            checks,
+            name="relay_classifier_produced",
+            message="Relay classifier skipped due to quality gate failure; regression model still available",
+            value=False,
+        )
+
+    completed_at = report.get("completed_at_utc")
+
     check_payload = [
         {
             "name": item.name,
@@ -215,6 +299,9 @@ def evaluate_health(args: argparse.Namespace) -> tuple[dict[str, Any], list[Chec
             "classification_f1_mean": classification_f1_value,
             "training_report_age_hours": age_hours,
             "training_data_rows": data_rows,
+            "training_completed_at_utc": completed_at,
+            "relay_classifier_produced": relay_produced,
+            "relay_quality_gate_passed": relay_gate_passed,
         },
         "checks": check_payload,
     }
@@ -238,6 +325,8 @@ def render_markdown(payload: dict[str, Any]) -> str:
         f"- Classification F1 mean: **{payload.get('snapshot', {}).get('classification_f1_mean', 'N/A')}**",
         f"- Training report age (hours): **{payload.get('snapshot', {}).get('training_report_age_hours', 'N/A')}**",
         f"- Training data rows: **{payload.get('snapshot', {}).get('training_data_rows', 'N/A')}**",
+        f"- Training completed at (UTC): **{payload.get('snapshot', {}).get('training_completed_at_utc', 'N/A')}**",
+        f"- Relay classifier produced: **{payload.get('snapshot', {}).get('relay_classifier_produced', 'N/A')}**",
         "",
         "## Checks",
         "",
@@ -280,6 +369,9 @@ def main() -> None:
     print(f"Health report written to: {output_json_path}")
     print(f"Health summary markdown written to: {output_md_path}")
     print(f"Overall health status: {str(payload['overall_status']).upper()}")
+
+    if args.notify_telegram:
+        maybe_notify_telegram(project_root, payload, checks)
 
     has_failures = any(item.status == "fail" for item in checks)
     has_warnings = any(item.status == "warn" for item in checks)
