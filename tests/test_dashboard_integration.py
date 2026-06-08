@@ -1,4 +1,5 @@
 import importlib
+import os
 import sys
 import types
 import unittest
@@ -146,7 +147,7 @@ def load_dashboard_module():
             "serial": serial_module,
         },
     ):
-        with patch("threading.Thread", DummyThread):
+        with patch("builtins.print"), patch("threading.Thread", DummyThread):
             return importlib.import_module("app.dashboard")
 
 
@@ -261,6 +262,59 @@ class DashboardIntegrationTests(unittest.TestCase):
         self.assertEqual(next_offset, 100)
         self.assertEqual(self.dashboard.ser.writes, [])
         self.assertEqual(notifier.sent, [])
+
+    def test_process_serial_line_ignores_malformed_lines(self):
+        self.dashboard.process_serial_line("not a sensor line")
+
+        self.assertIsNone(self.dashboard.training_state["temp_c"])
+        self.assertIsNone(self.dashboard.training_state["humidity_pct"])
+        self.assertIsNone(self.dashboard.training_state["light_lux"])
+
+    def test_get_model_status_text_relay_skipped(self):
+        import json
+        import os
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            models_dir = os.path.join(temp_dir, "models")
+            os.makedirs(models_dir, exist_ok=True)
+            report_path = os.path.join(models_dir, "training_report.json")
+            with open(report_path, "w", encoding="utf-8") as handle:
+                json.dump(
+                    {
+                        "best_models": {"light_forecast": "hist_gradient_boosting", "relay_light": None},
+                        "quality_gate": {"relay_light": {"passed": False}},
+                        "completed_at_utc": "2026-02-20T10:00:00+00:00",
+                    },
+                    handle,
+                )
+
+            original_path = self.dashboard.TRAINING_REPORT_FILE
+            try:
+                self.dashboard.TRAINING_REPORT_FILE = report_path
+                status = self.dashboard.get_model_status_text()
+            finally:
+                self.dashboard.TRAINING_REPORT_FILE = original_path
+
+        self.assertIn("relay=not-produced", status)
+        self.assertIn("relay skipped", status)
+
+    def test_serial_port_reads_from_environment(self):
+        with patch.dict(os.environ, {"FARMEASE_SERIAL_PORT": "COM7"}, clear=False):
+            dashboard = load_dashboard_module()
+            self.assertEqual(dashboard.PORT, "COM7")
+
+    @unittest.skipUnless(os.getenv("FARMEASE_HIL"), "Requires hardware-in-the-loop environment (set FARMEASE_HIL=1)")
+    def test_live_serial_hardware_ingest(self):
+        import serial
+
+        port = os.getenv("FARMEASE_SERIAL_PORT", "COM3")
+        connection = serial.Serial(port, 115200, timeout=1)
+        try:
+            line = connection.readline().decode(errors="ignore").strip()
+            self.assertIsInstance(line, str)
+        finally:
+            connection.close()
 
 
 if __name__ == "__main__":

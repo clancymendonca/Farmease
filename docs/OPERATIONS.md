@@ -23,15 +23,28 @@ This script validates key paths and starts `dashboard.py` with the project venv 
 
 ## Retrain models (manual)
 
-Standard retraining:
+Quick retrain + predict smoke check:
 
 ```powershell
-python train_models.py
+.\scripts\retrain_models.ps1
 ```
 
-Stricter retraining gate:
+Full retraining healthcheck (train, predict, evidence, health report):
 
 ```powershell
+.\scripts\run_retraining_healthcheck.ps1
+```
+
+Stricter relay quality gate:
+
+```powershell
+.\scripts\retrain_models.ps1 -StrictRelayQuality
+```
+
+Direct Python entry point (defaults to `--device auto`):
+
+```powershell
+python train_models.py --walk-forward-splits 6 --no-progress
 python train_models.py --strict-relay-quality
 ```
 
@@ -39,11 +52,64 @@ Manual retraining runs:
 1. `train_models.py` with configurable walk-forward splits
 2. `predict_next.py` smoke check to verify artifacts load and infer
 
+### Script matrix
+
+| Script | Use when |
+|--------|----------|
+| `retrain_models.ps1` | Quick manual retrain + predict only |
+| `run_retraining_healthcheck.ps1` | Full ops check including `docs/HEALTH_CHECK.md` |
+| `event_rehearsal.ps1` | Pre-event validation (tests + retrain + evidence) |
+| `install_retraining_schedule.ps1` | Enable daily scheduled retraining |
+| `uninstall_retraining_schedule.ps1` | Disable scheduled retraining |
+
+### Scheduled retraining
+
+Install daily retraining at 2:00 AM (fails on health issues by default):
+
+```powershell
+.\scripts\install_retraining_schedule.ps1
+```
+
+Remove scheduled retraining:
+
+```powershell
+.\scripts\uninstall_retraining_schedule.ps1
+```
+
+Run immediately:
+
+```powershell
+Start-ScheduledTask -TaskName "FarmEase-RetrainingHealthcheck"
+```
+
+When Telegram is configured (`TELEGRAM_ALERTS=true`), scheduled runs can notify on health failures via `-NotifyTelegram` (enabled automatically by the install script when alerts are on).
+
+Review health output:
+- `docs/HEALTH_CHECK.md`
+- `models/health_check_report.json`
+
+### Dashboard at logon (optional)
+
+```powershell
+.\scripts\install_dashboard_service.ps1
+.\scripts\uninstall_dashboard_service.ps1
+```
+
 ## Validation checklist
 
 ```powershell
 python -m py_compile dashboard.py telegram_notifier.py
 python -m unittest discover -s tests -p "test_*.py"
+```
+
+PowerShell scripts are validated locally on Windows:
+
+```powershell
+Get-ChildItem scripts -Filter *.ps1 -Recurse | ForEach-Object {
+  $errors = $null
+  [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$errors)
+  if ($errors) { throw "Parse error in $($_.FullName)" }
+}
 ```
 
 Generate event evidence summary:
@@ -63,8 +129,13 @@ Run the complete pre-event sequence in one command:
 This sequence executes:
 1. Syntax checks (`py_compile`)
 2. Unit tests
-3. Retraining + prediction smoke check
-4. Event evidence generation (`docs/EVENT_EVIDENCE.md`)
+3. Retraining + prediction + event evidence (`docs/EVENT_EVIDENCE.md`)
+
+Optional cloud sync during rehearsal:
+
+```powershell
+.\scripts\event_rehearsal.ps1 -WithCloudSync
+```
 
 ## Optional cloud-sync worker
 
@@ -98,9 +169,11 @@ Review generated artifacts:
 - `models/relay_light_model.joblib` (if quality gate passes)
 - `models/feature_columns.json`
 - `docs/EVENT_EVIDENCE.md`
+- `docs/HEALTH_CHECK.md`
 
 ## Operational notes
 
+- Set `FARMEASE_SERIAL_PORT` in `.env` if your Arduino is not on `COM3`.
 - Generated logs under `data/` are local runtime artifacts and should stay untracked.
 - If relay class balance degrades, retraining may skip relay classifier by design.
 - Prefer walk-forward fold consistency over one-shot split metrics when selecting production models.

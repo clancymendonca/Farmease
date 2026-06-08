@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,33 @@ try:
     from .ml_pipeline import build_feature_frame, load_dataset, make_supervised_data, prepare_dataframe
 except ImportError:
     from ml_pipeline import build_feature_frame, load_dataset, make_supervised_data, prepare_dataframe
+
+
+def resolve_xgb_device(requested: str) -> str:
+    normalized = requested.strip().lower()
+    if normalized == "cpu":
+        return "cpu"
+    if normalized == "cuda":
+        return "cuda"
+
+    try:
+        import numpy as np
+        from xgboost import XGBRegressor  # type: ignore
+
+        sample_x = np.array([[0.0], [1.0]], dtype=np.float32)
+        sample_y = np.array([0.0, 1.0], dtype=np.float32)
+        model = XGBRegressor(
+            n_estimators=1,
+            max_depth=1,
+            tree_method="hist",
+            device="cuda",
+            verbosity=0,
+        )
+        model.fit(sample_x, sample_y)
+        model.predict(sample_x)
+        return "cuda"
+    except Exception:
+        return "cpu"
 
 
 def select_candidate_models(candidates: dict[str, Any], model_family: str) -> dict[str, Any]:
@@ -309,7 +337,7 @@ def build_regression_candidates(random_state: int, device: str) -> dict[str, Any
             "tree_method": "hist",
         }
 
-        if device in {"cuda", "auto"}:
+        if device == "cuda":
             xgb_params["device"] = "cuda"
 
         candidates["xgboost"] = XGBRegressor(**xgb_params)
@@ -353,7 +381,7 @@ def build_classification_candidates(random_state: int, device: str) -> dict[str,
             "tree_method": "hist",
         }
 
-        if device in {"cuda", "auto"}:
+        if device == "cuda":
             xgb_params["device"] = "cuda"
 
         candidates["xgboost"] = XGBClassifier(**xgb_params)
@@ -556,7 +584,11 @@ def train_pipeline(
     walk_forward_splits: int,
     min_relay_class_count: int,
     strict_relay_quality: bool,
+    requested_device: str | None = None,
 ) -> dict[str, Any]:
+    original_request = requested_device or device
+    resolved_device = resolve_xgb_device(device)
+    device = resolved_device
     stage_bar = None
     if show_progress and tqdm is not None:
         stage_bar = tqdm(total=6, desc="Training pipeline", unit="stage")
@@ -695,10 +727,12 @@ def train_pipeline(
         "horizon_steps": horizon_steps,
         "train_rows": int(len(train_x)),
         "valid_rows": int(len(valid_x)),
-        "requested_device": device,
+        "requested_device": original_request,
+        "resolved_device": resolved_device,
         "model_family": model_family,
-        "cuda_requested": device in {"cuda", "auto"},
+        "cuda_requested": resolved_device == "cuda",
         "cuda_used_by_best_model": "xgboost" in {reg_name, cls_name},
+        "completed_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "best_models": {
             "light_forecast": reg_name,
             "relay_light": cls_name,
@@ -808,8 +842,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--device",
         choices=["cpu", "cuda", "auto"],
-        default="cuda",
-        help="Training device for XGBoost candidates (default: cuda).",
+        default="auto",
+        help="Training device for XGBoost candidates: cpu, cuda, or auto (default: auto).",
     )
     parser.add_argument(
         "--no-progress",
@@ -855,6 +889,7 @@ def main() -> None:
         train_ratio=args.train_ratio,
         random_state=args.seed,
         device=args.device,
+        requested_device=args.device,
         model_family=args.model_family,
         show_progress=not args.no_progress,
         walk_forward_splits=args.walk_forward_splits,

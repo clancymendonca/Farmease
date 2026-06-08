@@ -14,6 +14,16 @@ class HealthReportScriptTests(unittest.TestCase):
     def _write_sample_training_report(self, models_dir: Path, rows_used: int = 1200, mae: float = 300.0, f1: float = 0.6, folds: int = 4):
         report = {
             "rows_used": rows_used,
+            "completed_at_utc": "2026-02-20T12:00:00+00:00",
+            "best_models": {
+                "light_forecast": "hist_gradient_boosting",
+                "relay_light": "hist_gradient_boosting",
+            },
+            "quality_gate": {
+                "relay_light": {
+                    "passed": True,
+                }
+            },
             "walk_forward": {
                 "generated_folds": folds,
                 "regression": {
@@ -117,6 +127,85 @@ class HealthReportScriptTests(unittest.TestCase):
             self.assertTrue(output_json.exists())
             payload = json.loads(output_json.read_text(encoding="utf-8"))
             self.assertEqual(payload["overall_status"], "fail")
+
+    def test_health_report_warns_when_relay_classifier_skipped(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            models_dir = temp_root / "models"
+            data_dir = temp_root / "data"
+            docs_dir = temp_root / "docs"
+            models_dir.mkdir(parents=True, exist_ok=True)
+            data_dir.mkdir(parents=True, exist_ok=True)
+            docs_dir.mkdir(parents=True, exist_ok=True)
+
+            report = {
+                "rows_used": 1200,
+                "best_models": {"light_forecast": "hist_gradient_boosting", "relay_light": None},
+                "quality_gate": {"relay_light": {"passed": False}},
+                "walk_forward": {
+                    "generated_folds": 4,
+                    "regression": {"metrics": {"mae": {"mean": 300.0}}},
+                    "classification": {"metrics": {"f1": {"mean": 0.6}}},
+                },
+            }
+            (models_dir / "training_report.json").write_text(json.dumps(report), encoding="utf-8")
+            (models_dir / "light_forecast_model.joblib").write_text("ok", encoding="utf-8")
+            (models_dir / "feature_columns.json").write_text(json.dumps(["temp_c"]), encoding="utf-8")
+            self._write_training_data(data_dir)
+
+            result = subprocess.run(
+                [sys.executable, str(self.script_path), "--project-root", str(temp_root)],
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 0)
+            payload = json.loads((models_dir / "health_check_report.json").read_text(encoding="utf-8"))
+            relay_check = next(item for item in payload["checks"] if item["name"] == "relay_classifier_produced")
+            self.assertEqual(relay_check["status"], "warn")
+
+    def test_health_report_fails_relay_skip_when_strict(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            models_dir = temp_root / "models"
+            data_dir = temp_root / "data"
+            docs_dir = temp_root / "docs"
+            models_dir.mkdir(parents=True, exist_ok=True)
+            data_dir.mkdir(parents=True, exist_ok=True)
+            docs_dir.mkdir(parents=True, exist_ok=True)
+
+            report = {
+                "rows_used": 1200,
+                "best_models": {"light_forecast": "hist_gradient_boosting", "relay_light": None},
+                "quality_gate": {"relay_light": {"passed": False}},
+                "walk_forward": {
+                    "generated_folds": 4,
+                    "regression": {"metrics": {"mae": {"mean": 300.0}}},
+                    "classification": {"metrics": {"f1": {"mean": 0.6}}},
+                },
+            }
+            (models_dir / "training_report.json").write_text(json.dumps(report), encoding="utf-8")
+            (models_dir / "light_forecast_model.joblib").write_text("ok", encoding="utf-8")
+            (models_dir / "feature_columns.json").write_text(json.dumps(["temp_c"]), encoding="utf-8")
+            self._write_training_data(data_dir)
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(self.script_path),
+                    "--project-root",
+                    str(temp_root),
+                    "--strict-relay-quality",
+                    "--fail-on-health-issue",
+                ],
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 1)
+            payload = json.loads((models_dir / "health_check_report.json").read_text(encoding="utf-8"))
+            relay_check = next(item for item in payload["checks"] if item["name"] == "relay_classifier_produced")
+            self.assertEqual(relay_check["status"], "fail")
 
 
 if __name__ == "__main__":
