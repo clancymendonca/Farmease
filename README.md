@@ -87,6 +87,12 @@ Run the end-to-end rehearsal script:
 .\scripts\event_rehearsal.ps1
 ```
 
+Retrain models and run health check:
+
+```powershell
+.\scripts\run_retraining_healthcheck.ps1
+```
+
 Optional cloud sync worker:
 
 ```powershell
@@ -120,6 +126,7 @@ Common optional keys:
 - `TELEGRAM_STARTUP_BRIEFING`, `FARMEASE_MODE`
 - `FARMEASE_CLOUD_SYNC`, `FARMEASE_CLOUD_ENDPOINT`, `FARMEASE_CLOUD_API_KEY`
 - `FARMEASE_CLOUD_TIMEOUT_SECONDS`, `FARMEASE_CLOUD_POLL_SECONDS`, `FARMEASE_CLOUD_BATCH_SIZE`, `FARMEASE_DEVICE_ID`
+- `FARMEASE_SERIAL_PORT` (default `COM3`)
 
 ## What Stays Out Of Git
 
