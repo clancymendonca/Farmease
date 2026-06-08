@@ -35,6 +35,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fail-on-health-issue", action="store_true", default=False)
     parser.add_argument("--fail-on-warning", action="store_true", default=False)
     parser.add_argument("--notify-telegram", action="store_true", default=False)
+    parser.add_argument("--strict-relay-quality", action="store_true", default=False)
     return parser.parse_args()
 
 
@@ -251,6 +252,15 @@ def evaluate_health(args: argparse.Namespace) -> tuple[dict[str, Any], list[Chec
             fail_message="Relay classifier not produced",
             value=relay_produced,
         )
+    elif args.strict_relay_quality:
+        add_check(
+            checks,
+            name="relay_classifier_produced",
+            condition=False,
+            pass_message="Relay classifier produced or quality gate passed",
+            fail_message="Relay classifier not produced; strict relay quality required",
+            value=False,
+        )
     else:
         add_warn_check(
             checks,
@@ -371,7 +381,10 @@ def main() -> None:
     print(f"Overall health status: {str(payload['overall_status']).upper()}")
 
     if args.notify_telegram:
-        maybe_notify_telegram(project_root, payload, checks)
+        failed = [item for item in checks if item.status == "fail"]
+        warned = [item for item in checks if item.status == "warn"]
+        if failed or warned:
+            maybe_notify_telegram(project_root, payload, checks)
 
     has_failures = any(item.status == "fail" for item in checks)
     has_warnings = any(item.status == "warn" for item in checks)

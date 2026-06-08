@@ -1,4 +1,5 @@
 import importlib
+import os
 import sys
 import types
 import unittest
@@ -297,6 +298,23 @@ class DashboardIntegrationTests(unittest.TestCase):
 
         self.assertIn("relay=not-produced", status)
         self.assertIn("relay skipped", status)
+
+    def test_serial_port_reads_from_environment(self):
+        with patch.dict(os.environ, {"FARMEASE_SERIAL_PORT": "COM7"}, clear=False):
+            dashboard = load_dashboard_module()
+            self.assertEqual(dashboard.PORT, "COM7")
+
+    @unittest.skipUnless(os.getenv("FARMEASE_HIL"), "Requires hardware-in-the-loop environment (set FARMEASE_HIL=1)")
+    def test_live_serial_hardware_ingest(self):
+        import serial
+
+        port = os.getenv("FARMEASE_SERIAL_PORT", "COM3")
+        connection = serial.Serial(port, 115200, timeout=1)
+        try:
+            line = connection.readline().decode(errors="ignore").strip()
+            self.assertIsInstance(line, str)
+        finally:
+            connection.close()
 
 
 if __name__ == "__main__":

@@ -30,3 +30,7 @@ jobs:
       - name: Run unit tests
         run: |
           python -m unittest discover -s tests -p "test_*.py"
+
+      - name: Run training smoke test
+        run: |
+          python -m unittest tests.test_train_models_smoke -v

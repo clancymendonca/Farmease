@@ -164,6 +164,49 @@ class HealthReportScriptTests(unittest.TestCase):
             relay_check = next(item for item in payload["checks"] if item["name"] == "relay_classifier_produced")
             self.assertEqual(relay_check["status"], "warn")
 
+    def test_health_report_fails_relay_skip_when_strict(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            models_dir = temp_root / "models"
+            data_dir = temp_root / "data"
+            docs_dir = temp_root / "docs"
+            models_dir.mkdir(parents=True, exist_ok=True)
+            data_dir.mkdir(parents=True, exist_ok=True)
+            docs_dir.mkdir(parents=True, exist_ok=True)
+
+            report = {
+                "rows_used": 1200,
+                "best_models": {"light_forecast": "hist_gradient_boosting", "relay_light": None},
+                "quality_gate": {"relay_light": {"passed": False}},
+                "walk_forward": {
+                    "generated_folds": 4,
+                    "regression": {"metrics": {"mae": {"mean": 300.0}}},
+                    "classification": {"metrics": {"f1": {"mean": 0.6}}},
+                },
+            }
+            (models_dir / "training_report.json").write_text(json.dumps(report), encoding="utf-8")
+            (models_dir / "light_forecast_model.joblib").write_text("ok", encoding="utf-8")
+            (models_dir / "feature_columns.json").write_text(json.dumps(["temp_c"]), encoding="utf-8")
+            self._write_training_data(data_dir)
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(self.script_path),
+                    "--project-root",
+                    str(temp_root),
+                    "--strict-relay-quality",
+                    "--fail-on-health-issue",
+                ],
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 1)
+            payload = json.loads((models_dir / "health_check_report.json").read_text(encoding="utf-8"))
+            relay_check = next(item for item in payload["checks"] if item["name"] == "relay_classifier_produced")
+            self.assertEqual(relay_check["status"], "fail")
+
 
 if __name__ == "__main__":
     unittest.main()

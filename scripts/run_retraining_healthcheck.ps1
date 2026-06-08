@@ -89,6 +89,9 @@ try {
         if ($FailOnHealthIssue) {
             $healthArgs += "--fail-on-health-issue"
         }
+        if ($StrictRelayQuality) {
+            $healthArgs += "--strict-relay-quality"
+        }
         if ($NotifyTelegram) {
             $healthArgs += "--notify-telegram"
         }

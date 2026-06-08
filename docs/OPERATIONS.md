@@ -102,6 +102,16 @@ python -m py_compile dashboard.py telegram_notifier.py
 python -m unittest discover -s tests -p "test_*.py"
 ```
 
+PowerShell scripts are validated locally on Windows:
+
+```powershell
+Get-ChildItem scripts -Filter *.ps1 -Recurse | ForEach-Object {
+  $errors = $null
+  [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$errors)
+  if ($errors) { throw "Parse error in $($_.FullName)" }
+}
+```
+
 Generate event evidence summary:
 
 ```powershell
